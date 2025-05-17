@@ -44,44 +44,78 @@ class SMSNotification:
         if "fail" in message:
             raise Exception("Failed to send SMS")
 
+class InAppNotificationService:
+    @staticmethod
+    def create_notification(user_id, message, notification_type='generic'):
+        """Create and store an in-app notification"""
+        try:
+            notification = InAppNotification(
+                user_id=user_id,
+                message=message,
+                notification_type=notification_type
+            )
+            db.session.add(notification)
+            db.session.commit()
+            return notification
+        except Exception as e:
+            db.session.rollback()
+            raise Exception(f"Failed to create notification: {str(e)}")
 
-class InAppNotification:
-    def send(self, user_id, message):
-        notification = InAppNotification(
-            user_id=user_id,
-            message=message
-        )
-        db.session.add(notification)
-        db.session.commit()
+    @staticmethod
+    def mark_as_read(notification_id):
+        """Mark a notification as read"""
+        notification = InAppNotification.query.get(notification_id)
+        if notification:
+            notification.is_read = True
+            db.session.commit()
+            return True
+        return False
 
+    @staticmethod
+    def get_user_notifications(user_id, unread_only=False):
+        """Retrieve notifications for a user"""
+        query = InAppNotification.query.filter_by(user_id=user_id)
+        if unread_only:
+            query = query.filter_by(is_read=False)
+        return query.order_by(InAppNotification.created_at.desc()).all()
 
 def process_notification(data):
-    # Use Flask's current_app context
-    with app.app_context():
-        notification = Notification(
-            user_id=data['user_id'],
-            message=data['message'],
-            type=data['type'],
-            status='processing'
-        )
-        db.session.add(notification)
-        db.session.commit()
-
+    with current_app.app_context():
         try:
-            if data['type'] == 'email':
-                # Pass user_id and message
-                EmailNotification().send(data['user_id'], data['message'])
-            elif data['type'] == 'sms':
-                SMSNotification().send(data['user_id'], data['message'])
-            elif data['type'] == 'in-app':
-                InAppNotification().send(data['user_id'], data['message'])
-
-            notification.status = 'sent'
+            # Create the main notification record
+            notification = Notification(
+                user_id=data['user_id'],
+                message=data['message'],
+                type=data['type'],
+                status='processing'
+            )
+            db.session.add(notification)
             db.session.commit()
 
+            # Handle in-app notifications specifically
+            if data['type'] == 'in-app':
+                InAppNotificationService.create_notification(
+                    user_id=data['user_id'],
+                    message=data['message'],
+                    notification_type=data.get('subtype', 'generic')
+                )
+                notification.status = 'sent'
+
+            # Handle other notification types
+            elif data['type'] == 'email':
+                EmailNotification().send(data['user_id'], data['message'])
+                notification.status = 'sent'
+
+            elif data['type'] == 'sms':
+                SMSNotification().send(data['user_id'], data['message'])
+                notification.status = 'sent'
+
+            db.session.commit()
+            return (True, None)
+
         except Exception as e:
-            print(f"Error: {e}")
-            db.session.rollback()  # Rollback on error
+            db.session.rollback()
+            print(f"Error processing notification: {str(e)}")
 
             if data['retry_count'] < MAX_RETRIES - 1:
                 data['retry_count'] += 1
@@ -89,9 +123,7 @@ def process_notification(data):
             else:
                 notification.status = 'failed'
                 db.session.commit()
-
-        return (True, None)
-
+                return (True, None)
 
 def start_worker():
     # Connect to RabbitMQ

@@ -4,6 +4,7 @@ import pika, json
 from datetime import datetime
 from extensions import db
 from models import User, Notification, InAppNotification
+from tasks import InAppNotificationService
 
 app = Flask(__name__)
 app.config.from_object('config.Config')
@@ -49,6 +50,24 @@ def send_notification():
         channel.basic_publish(exchange='', routing_key='notifications', body=json.dumps(message))
         connection.close()
         return jsonify({'message': 'Notification queued successfully'}), 202
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/users/<int:user_id>/in-app-notifications', methods=['GET'])
+def get_in_app_notifications(user_id):
+    try:
+        unread_only = request.args.get('unread', 'false').lower() == 'true'
+        notifications = InAppNotificationService.get_user_notifications(user_id, unread_only)
+        return jsonify([n.to_dict() for n in notifications])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/in-app-notifications/<int:notification_id>/read', methods=['POST'])
+def mark_notification_read(notification_id):
+    try:
+        if InAppNotificationService.mark_as_read(notification_id):
+            return jsonify({'success': True})
+        return jsonify({'error': 'Notification not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
